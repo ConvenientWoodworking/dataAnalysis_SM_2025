@@ -71,7 +71,7 @@ else:
 st.header('St Matthias: 2025 Environmental Data')
 
 # Settings header
-st.sidebar.title('Settings')␊
+st.sidebar.title('Settings')
 
 # Constants
 FOLDER = './data'
