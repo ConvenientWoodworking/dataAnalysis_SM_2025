@@ -6,7 +6,6 @@ from PIL import Image
 
 import pandas as pd
 import numpy as np
-import altair as alt
 import streamlit as st
 
 # --- Device name mapping ---
@@ -67,21 +66,6 @@ def fill_and_flag(series, max_gap=10, n_neighbors=4):
     return s, interpolated
 
 
-def compute_summary_stats(df, field='Temp_F'):
-    return df.groupby('DeviceName').agg(
-        count=(field, 'count'),
-        avg=(field, 'mean'),
-        std=(field, 'std'),
-        min=(field, 'min'),
-        max=(field, 'max'),
-        median=(field, lambda x: x.quantile(0.5)),
-        missing=(field, lambda x: x.isna().sum())
-    ).reset_index()
-
-
-def compute_correlations(df, field='Temp_F'):
-    pivot = df.pivot(index='Timestamp', columns='DeviceName', values=field)
-    return pivot.corr(method='pearson')
 
 # --- Streamlit App ---
 st.set_page_config(page_title='St Matthias: 2025 Environmental Data', layout='wide')
@@ -197,92 +181,6 @@ if st.sidebar.button('Compile'):
         df = df[df['Device'].isin(selected)]
         df = df[(df['Timestamp'].dt.date >= start_date) & (df['Timestamp'].dt.date <= end_date)]
 
-        # Temperature plot
-        st.header('Temperature Data')
-        df['DeviceName'] = df['Device'].map(DEVICE_LABELS).fillna(df['Device'])
-        df_t = df.melt(
-            id_vars=['Timestamp','DeviceName','Interpolated'],
-            value_vars=['Temp_F'], var_name='Metric'
-        )
-        line_temp = alt.Chart(df_t).mark_line().encode(
-            x=alt.X('Timestamp:T', axis=alt.Axis(format='%m/%d')),
-            y=alt.Y('value:Q', title='Temperature (°F)'), color='DeviceName:N'
-        )
-        pts_temp = alt.Chart(df_t[df_t['Interpolated']]).mark_circle(size=50, color='red').encode(
-            x=alt.X('Timestamp:T', axis=alt.Axis(format='%m/%d')),
-            y='value:Q'
-        )
-        st.altair_chart(line_temp + pts_temp, use_container_width=True)
-
-        # Relative Humidity plot
-        st.header('Relative Humidity Data')
-        df_r = df.melt(id_vars=['Timestamp','DeviceName','Interpolated'], value_vars=['RH'], var_name='Metric')
-        line_rh = alt.Chart(df_r).mark_line().encode(
-            x=alt.X('Timestamp:T', axis=alt.Axis(format='%m/%d')),
-            y=alt.Y('value:Q', title='Relative Humidity (%)'), color='DeviceName:N'
-        )
-        pts_rh = alt.Chart(df_r[df_r['Interpolated']]).mark_circle(size=50, color='red').encode(
-            x=alt.X('Timestamp:T', axis=alt.Axis(format='%m/%d')),
-            y='value:Q'
-        )
-        st.altair_chart(line_rh + pts_rh, use_container_width=True)
-
-        # Correlation matrices
-        st.header('Correlation Matrix (Temperature)')
-        corr_t = compute_correlations(df, field='Temp_F')
-        df_ct = (
-            corr_t.reset_index().rename(columns={'index':'DeviceName'})
-            .melt(id_vars='DeviceName', var_name='DeviceName2', value_name='Corr')
-        )
-        heat_t = alt.Chart(df_ct).mark_rect().encode(
-            x='DeviceName2:O', y='DeviceName:O', color='Corr:Q'
-        ).properties(width=400, height=400)
-        st.altair_chart(heat_t, use_container_width=False)
-
-        st.header('Correlation Matrix (Relative Humidity)')
-        corr_h = compute_correlations(df, field='RH')
-        df_ch = (
-            corr_h.reset_index().rename(columns={'index':'DeviceName'})
-            .melt(id_vars='DeviceName', var_name='DeviceName2', value_name='Corr')
-        )
-        heat_h = alt.Chart(df_ch).mark_rect().encode(
-            x='DeviceName2:O', y='DeviceName:O', color='Corr:Q'
-        ).properties(width=400, height=400)
-        st.altair_chart(heat_h, use_container_width=False)
-
-        # Show normalized charts only if the Outdoor Reference checkbox is checked
-        #if 'Outdoor Reference' in selected:
-        # Normalized Temperature Difference plot
-        st.header('Normalized Temperature Difference')
-        df_out = df[df['Device']=='SM01'][['Timestamp','Temp_F','RH']].rename(columns={'Temp_F':'T_out','RH':'RH_out'})
-        df_norm = df.merge(df_out, on='Timestamp')
-        df_norm['DeviceName'] = df_norm['Device'].map(DEVICE_LABELS).fillna(df_norm['Device'])
-        df_norm['Norm_T']  = df_norm['Temp_F'] - df_norm['T_out']
-        chart_norm_t = alt.Chart(df_norm).mark_line().encode(
-            x=alt.X('Timestamp:T', axis=alt.Axis(format='%m/%d')),
-            y=alt.Y('Norm_T:Q', title='Temp Difference (°F)'), color='DeviceName:N'
-        )
-        st.altair_chart(chart_norm_t, use_container_width=True)
-        
-        # Normalized Relative Humidity Difference plot
-        st.header('Normalized Relative Humidity Difference')
-        df_norm['Norm_RH'] = df_norm['RH'] - df_norm['RH_out']
-        chart_norm_rh = alt.Chart(df_norm).mark_line().encode(
-            x=alt.X('Timestamp:T', axis=alt.Axis(format='%m/%d')),
-            y=alt.Y('Norm_RH:Q', title='RH Difference (%)'), color='DeviceName:N'
-        )
-        st.altair_chart(chart_norm_rh, use_container_width=True)         
-        
-        # Corr vs SM10 tables
-        st.header('Pearson Corr vs Outdoor Reference (Temp)')
-        cvt = compute_correlations(df, field='Temp_F')['Outdoor Reference']
-        st.table(cvt.reset_index().rename(columns={'index':'DeviceName','Outdoor-Reference':'Corr'}))
-        
-        st.header('Pearson Corr vs Outdoor Reference (RH)')
-        cvr = compute_correlations(df, field='RH')['Outdoor Reference']
-        st.table(cvr.reset_index().rename(columns={'index':'DeviceName','Outdoor-Reference':'Corr'}))
-
-        # --- Quarterly KPI Summary ---
         indoor_df = df[df['Device'] != 'SM01']
         avg_temp = indoor_df['Temp_F'].mean()
         temp_swing = indoor_df['Temp_F'].max() - indoor_df['Temp_F'].min()
@@ -347,13 +245,5 @@ if st.sidebar.button('Compile'):
         st.header('Quarterly KPI Summary')
         st.table(pd.DataFrame(rows))
 
-        #else:
-            #st.warning("Outdoor Reference must be selected to calculate Normalized Data")
-
-        # Summary Stats
-        st.header('Summary Statistics (Temperature)')
-        st.dataframe(compute_summary_stats(df, field='Temp_F'))
-        st.header('Summary Statistics (Relative Humidity)')
-        st.dataframe(compute_summary_stats(df, field='RH'))
 else:
-    st.info("Use 'Load Data' then 'Compile' to display the data plots.")
+    st.info("Use 'Load Data' then 'Compile' to display the KPI summary.")
