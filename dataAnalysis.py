@@ -83,7 +83,7 @@ st.header('St Matthias: 2025 Environmental Data')
 
 # Settings header
 st.sidebar.title('Settings')
-#st.sidebar.image("./Logo.png", use_container_width=True)
+
 
 # Constants
 FOLDER = './data'
@@ -91,16 +91,35 @@ FOLDER = './data'
 # Date selectors
 date_cols = st.sidebar.columns(2)
 date_cols[0].write('Start date')
-start_date = date_cols[0].date_input("Start Date", value=datetime(2025, 1, 1), label_visibility="collapsed")
+start_date = date_cols[0].date_input(
+    "Start Date", value=datetime(2025, 1, 1), label_visibility="collapsed"
+)
 date_cols[1].write('End date')
-end_date   = date_cols[1].date_input("End Date", value=datetime.today(), label_visibility="collapsed")
+end_date = date_cols[1].date_input(
+    "End Date", value=datetime.today(), label_visibility="collapsed"
+)
 
-# Load Data button
-if st.sidebar.button('Load Data'):
+# Device groupings
+main = [f"SM{i:02d}" for i in range(2, 4)]
+crawlspace = [f"SM{i:02d}" for i in range(4, 6)]
+location_map = {d: "Main" for d in main}
+location_map.update({d: "Crawlspace" for d in crawlspace})
+
+# Hardcoded KPI band descriptions
+desc_avg_temp = "Quarterly average between 68°F and 75°F"
+desc_temp_swing = "Difference between max and min under 5°F"
+desc_avg_rh = "Comfort range 30–60% RH"
+desc_rh_var = "Standard deviation below 10%"
+
+# Analyze & Display
+if st.sidebar.button('Analyze'):
     pattern_csv = os.path.join(FOLDER, 'SM*_export_*.csv')
     pattern_xlsx = os.path.join(FOLDER, 'SM*_export_*.xlsx')
     files = glob.glob(pattern_csv) + glob.glob(pattern_xlsx)
-    device_dfs = {load_and_clean_file(f)['Device'].iloc[0]: load_and_clean_file(f) for f in files}
+    device_dfs = {
+        load_and_clean_file(f)['Device'].iloc[0]: load_and_clean_file(f)
+        for f in files
+    }
 
     master = max(device_dfs, key=lambda d: len(device_dfs[d]))
     master_times = device_dfs[master].sort_values('Timestamp')['Timestamp']
@@ -111,139 +130,76 @@ if st.sidebar.button('Load Data'):
             master_times, method='nearest', tolerance=pd.Timedelta(minutes=30)
         )
         filled_t, flag_t = fill_and_flag(tmp['Temp_F'])
-        filled_r, flag_r = fill_and_flag(tmp['RH'])
-        tmp['Temp_F']      = filled_t
-        tmp['RH']          = filled_r
-        tmp['Interpolated']= flag_t
-        tmp['Device']      = dev
-        # Map to friendly name
-        tmp['DeviceName']  = DEVICE_LABELS.get(dev, dev)
-        records.append(tmp.reset_index().rename(columns={'index':'Timestamp'}))
+        filled_r, _ = fill_and_flag(tmp['RH'])
+        tmp['Temp_F'] = filled_t
+        tmp['RH'] = filled_r
+        tmp['Interpolated'] = flag_t
+        tmp['Device'] = dev
+        tmp['DeviceName'] = DEVICE_LABELS.get(dev, dev)
+        tmp['Location'] = location_map.get(dev, 'Outdoor')
+        records.append(tmp.reset_index().rename(columns={'index': 'Timestamp'}))
 
     df_all = pd.concat(records, ignore_index=True)
-    st.session_state.df_all    = df_all
-    st.session_state.devices   = sorted(df_all['Device'])
+    df_all = df_all[
+        (df_all['Timestamp'].dt.date >= start_date)
+        & (df_all['Timestamp'].dt.date <= end_date)
+    ]
 
-# Device groupings
-devices    = st.session_state.get('devices', [])
-main       = [f'SM{i:02d}' for i in range(2,4)]
-crawlspace = [f'SM{i:02d}' for i in range(4,6)]
-outdoor    = ['SM01']
+    indoor_df = df_all[df_all['Location'] != 'Outdoor']
 
-# Grouped checkboxes
-def group_ui(group, label):
-    st.sidebar.markdown(f'**{label}**')
-    col1, col2 = st.sidebar.columns(2)
-    if col1.button(f'Select All {label}'):
-        for d in group:
-            if d in devices: st.session_state[f'chk_{d}'] = True
-    if col2.button(f'Deselect All {label}'):
-        for d in group:
-            if d in devices: st.session_state[f'chk_{d}'] = False
-    for d in group:
-        if d in devices:
-            key = f'chk_{d}'
-            st.session_state.setdefault(key, True)
-            label = DEVICE_LABELS.get(d, d)
-            st.sidebar.checkbox(label, key=key)
+    def temp_status(val: float) -> str:
+        if 68 <= val <= 75:
+            return 'Pass'
+        if val < 68 - 2 or val > 75 + 2:
+            return 'Flag'
+        return 'Check'
 
-group_ui(main,       'Main')
-group_ui(crawlspace, 'Crawlspace')
-# Outdoor Reference (no select/deselect buttons)
-st.sidebar.markdown("**Outdoor Reference**")
-for d in outdoor:
-    if d in devices:
-        key = f"chk_{d}"
-        st.session_state.setdefault(key, True)
-        st.sidebar.checkbox(DEVICE_LABELS.get(d, d), key=key)
-
-selected = [d for d in devices if st.session_state.get(f'chk_{d}')]
-
-# --- KPI Target Descriptions ---
-with st.sidebar.expander('KPI Band Descriptions', expanded=False):
-    desc_avg_temp = st.text_input('Avg Temp Target',
-                                  'Quarterly average between 68°F and 75°F')
-    desc_temp_swing = st.text_input('Temp Swing Target',
-                                    'Difference between max and min under 5°F')
-    desc_avg_rh = st.text_input('Avg RH Target',
-                                'Comfort range 30–60% RH')
-    desc_rh_var = st.text_input('RH Variability Target',
-                                'Standard deviation below 10%')
-    desc_corr = st.text_input('Correlation Target',
-                              'Pearson correlation with outdoor > 0.8')
-
-# Compile & Display
-if st.sidebar.button('Compile'):
-    if 'df_all' not in st.session_state:
-        st.error('Please load data first.')
-    else:
-        df = st.session_state.df_all
-        df = df[df['Device'].isin(selected)]
-        df = df[(df['Timestamp'].dt.date >= start_date) & (df['Timestamp'].dt.date <= end_date)]
-
-        indoor_df = df[df['Device'] != 'SM01']
-        avg_temp = indoor_df['Temp_F'].mean()
-        temp_swing = indoor_df['Temp_F'].max() - indoor_df['Temp_F'].min()
-        avg_rh = indoor_df['RH'].mean()
-        rh_var = indoor_df['RH'].std()
-
-        # Correlation of each indoor sensor vs outdoor reference
-        outdoor_df = df[df['Device'] == 'SM01'][['Timestamp', 'Temp_F']].rename(columns={'Temp_F': 'Temp_out'})
-        corr_results = {}
-        for dev in indoor_df['Device'].unique():
-            dev_df = indoor_df[indoor_df['Device'] == dev][['Timestamp', 'Temp_F']]
-            merged = dev_df.merge(outdoor_df, on='Timestamp')
-            corr = merged['Temp_F'].corr(merged['Temp_out']) if not merged.empty else np.nan
-            corr_results[dev] = corr
-
-        # Evaluation against bands
-        def temp_status(val):
-            if 68 <= val <= 75:
-                return 'Pass'
-            if val < 68 - 2 or val > 75 + 2:
-                return 'Flag'
-            return 'Check'
+    rows = []
+    for location in sorted(indoor_df['Location'].unique()):
+        loc_df = indoor_df[indoor_df['Location'] == location]
+        avg_temp = loc_df['Temp_F'].mean()
+        temp_swing = loc_df['Temp_F'].max() - loc_df['Temp_F'].min()
+        avg_rh = loc_df['RH'].mean()
+        rh_var = loc_df['RH'].std()
 
         swing_status = 'Area for improvement' if temp_swing > 5 else 'Pass'
         rh_status = 'Area for improvement' if rh_var > 10 else 'Pass'
 
-        rows = [
-            {
-                'KPI': 'Average Temp (°F)',
-                'Value': f"{avg_temp:.2f}",
-                'Status': temp_status(avg_temp),
-                'Target': desc_avg_temp,
-            },
-            {
-                'KPI': 'Temp Swing (°F)',
-                'Value': f"{temp_swing:.2f}",
-                'Status': swing_status,
-                'Target': desc_temp_swing,
-            },
-            {
-                'KPI': 'Average RH (%)',
-                'Value': f"{avg_rh:.2f}",
-                'Status': 'n/a',
-                'Target': desc_avg_rh,
-            },
-            {
-                'KPI': 'RH Variability (%)',
-                'Value': f"{rh_var:.2f}",
-                'Status': rh_status,
-                'Target': desc_rh_var,
-            },
-        ]
+        rows.extend(
+            [
+                {
+                    'Location': location,
+                    'KPI': 'Average Temp (°F)',
+                    'Value': f"{avg_temp:.2f}",
+                    'Status': temp_status(avg_temp),
+                    'Target': desc_avg_temp,
+                },
+                {
+                    'Location': location,
+                    'KPI': 'Temp Swing (°F)',
+                    'Value': f"{temp_swing:.2f}",
+                    'Status': swing_status,
+                    'Target': desc_temp_swing,
+                },
+                {
+                    'Location': location,
+                    'KPI': 'Average RH (%)',
+                    'Value': f"{avg_rh:.2f}",
+                    'Status': 'n/a',
+                    'Target': desc_avg_rh,
+                },
+                {
+                    'Location': location,
+                    'KPI': 'RH Variability (%)',
+                    'Value': f"{rh_var:.2f}",
+                    'Status': rh_status,
+                    'Target': desc_rh_var,
+                },
+            ]
+        )
 
-        for dev, corr in corr_results.items():
-            rows.append({
-                'KPI': f"Corr {DEVICE_LABELS.get(dev, dev)} vs Outdoor",
-                'Value': f"{corr:.2f}" if pd.notna(corr) else 'n/a',
-                'Status': 'Calibrate' if pd.notna(corr) and corr < 0.8 else 'OK',
-                'Target': desc_corr,
-            })
-
-        st.header('Quarterly KPI Summary')
-        st.table(pd.DataFrame(rows))
+    st.header('Quarterly KPI Summary')
+    st.table(pd.DataFrame(rows))
 
 else:
-    st.info("Use 'Load Data' then 'Compile' to display the KPI summary.")
+    st.info('Set your date range and click Analyze to display the KPI summary.')
